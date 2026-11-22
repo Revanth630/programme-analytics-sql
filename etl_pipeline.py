@@ -12,16 +12,34 @@ N_VILLAGES = 1350
 DISTRICTS = ["East Khasi Hills", "West Khasi Hills", "Ri-Bhoi", "West Jaintia Hills",
              "East Garo Hills", "West Garo Hills", "South Garo Hills", "East Jaintia Hills"]
 
+# Made-up enrolment levels so the KPIs have something to say: the districts closer to
+# Shillong do better, the remote Garo Hills lag, and every district improves over time.
+DISTRICT_BASE = [0.76, 0.66, 0.72, 0.64, 0.60, 0.63, 0.50, 0.58]
+SCHEME_SHIFT = [-0.04, 0.06, 0.04, -0.09, 0.02, 0.05]   # Housing, Water, Health, Livelihood, Education, Pension
+YEARLY_GAIN = 0.05
+
 
 def extract():
     """Simulate a raw field-survey export, including the data-quality issues real extracts have."""
-    n = 60000  # ~50,000 households surveyed across 1,350 villages
+    n = 60000  # survey records before cleaning
+    village = RNG.integers(1, N_VILLAGES + 1, n)
+    scheme = RNG.integers(1, 7, n)
+    days = RNG.integers(0, 730, n)
+    village_noise = RNG.normal(0, 0.05, N_VILLAGES + 1)
+    p = (np.array(DISTRICT_BASE)[(village - 1) % len(DISTRICTS)]
+         + np.array(SCHEME_SHIFT)[scheme - 1]
+         + YEARLY_GAIN * days / 365
+         + village_noise[village]).clip(0.05, 0.95)
+    enrolled = RNG.random(n) < p
+    flag = np.where(enrolled, "Y", "N").astype(object)
+    flag[enrolled & (RNG.random(n) < 0.08)] = "y"   # lower-case entries from one field team
+    flag[RNG.random(n) < 0.04] = None    # blanks
     raw = pd.DataFrame({
         "household_id": RNG.integers(1, 50001, n),
-        "village_id": RNG.integers(1, N_VILLAGES + 1, n),
-        "scheme_id": RNG.integers(1, 7, n),
-        "survey_date": pd.to_datetime("2024-01-01") + pd.to_timedelta(RNG.integers(0, 730, n), unit="D"),
-        "is_enrolled": RNG.choice(["Y", "N", "y", None], n, p=[0.6, 0.3, 0.05, 0.05]),
+        "village_id": village,
+        "scheme_id": scheme,
+        "survey_date": pd.to_datetime("2024-01-01") + pd.to_timedelta(days, unit="D"),
+        "is_enrolled": flag,
         "benefit_amount": RNG.normal(2500, 800, n).round(2),
     })
     raw.loc[RNG.choice(n, 200, replace=False), "benefit_amount"] = -1  # bad entries
@@ -30,12 +48,16 @@ def extract():
 
 def transform(raw):
     df = raw.drop_duplicates().copy()
+    dupes = len(raw) - len(df)
     df["is_enrolled"] = df.is_enrolled.str.upper().map({"Y": 1, "N": 0})
+    blanks = df.is_enrolled.isna().sum()
     df = df.dropna(subset=["is_enrolled"])
+    negatives = (df.benefit_amount < 0).sum()
     df = df[df.benefit_amount >= 0]
     df.loc[df.is_enrolled == 0, "benefit_amount"] = 0.0
     df["date_key"] = df.survey_date.dt.strftime("%Y%m%d").astype(int)
-    print(f"Rows: raw={len(raw):,} -> clean={len(df):,}")
+    print(f"Rows: raw={len(raw):,} -> clean={len(df):,}  "
+          f"(duplicates {dupes}, blank enrolment flag {blanks}, negative benefit {negatives})")
     return df
 
 
